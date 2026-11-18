@@ -101,13 +101,25 @@ export function refuseLinks(layout: ChainLayout, places: readonly string[]): voi
 /**
  * The directory listing of `place` (empty where there is none), refused when the directory or one
  * of `above` is a link or an entry of it is.
+ *
+ * Given `refused`, a link is handed to it instead and the listing goes on without it: a link at
+ * `place` or above it leaves an empty listing, and a link among the entries leaves the others. Only
+ * the reads that serve the record ask for this; each link is still named, by the collector, and
+ * nothing it stands for is opened.
  */
 export function listedWithoutLinks(
   layout: ChainLayout,
   place: string,
   above: readonly string[],
+  refused?: RefusedLine,
 ): ListedEntry[] {
-  refuseLinks(layout, [...above, place]);
+  try {
+    refuseLinks(layout, [...above, place]);
+  } catch (error) {
+    if (refused === undefined || !(error instanceof LinkedRecordError)) throw error;
+    refused(error);
+    return [];
+  }
   let entries: ListedEntry[];
   try {
     entries = listedEntries(join(layout.root, ...place.split('/')));
@@ -115,9 +127,13 @@ export function listedWithoutLinks(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  const link = entries.find((entry) => entry.link);
-  if (link !== undefined) throw new LinkedRecordError(layout, `${place}/${link.name}`);
-  return entries;
+  const links = entries.filter((entry) => entry.link);
+  if (links.length === 0) return entries;
+  const [first] = links;
+  if (refused === undefined)
+    throw new LinkedRecordError(layout, `${place}/${(first as ListedEntry).name}`);
+  for (const link of links) refused(new LinkedRecordError(layout, `${place}/${link.name}`));
+  return entries.filter((entry) => !entry.link);
 }
 
 /**
@@ -125,10 +141,11 @@ export function listedWithoutLinks(
  *
  * A symbolic link at `tails/` or under it is refused ({@link LinkedRecordError}), whatever it
  * points at: it used to be skipped in silence, so a linked tail vanished from every surface that
- * reads the record. Nothing it points at is opened.
+ * reads the record. Nothing it points at is opened. Given `refused`, a reader that serves the record
+ * is handed each link instead and goes on without it (see {@link listedWithoutLinks}).
  */
-export function listTails(layout: ChainLayout): string[] {
-  return listedWithoutLinks(layout, 'tails', [])
+export function listTails(layout: ChainLayout, refused?: RefusedLine): string[] {
+  return listedWithoutLinks(layout, 'tails', [], refused)
     .filter((e) => e.directory)
     .map((e) => e.name);
 }
@@ -468,12 +485,17 @@ export function holdsRecord(layout: ChainLayout): boolean {
 /**
  * The sealed + current segment files of a tail, in segment order. A link at the tail's directory,
  * at `tails/`, or anywhere in the tail's directory is refused ({@link LinkedRecordError}): a tail
- * with a link in it is not read, and nothing the link points at is opened.
+ * with a link in it is not read, and nothing the link points at is opened. Given `refused`, the link
+ * is handed to it and the segments that are not links are listed ({@link listedWithoutLinks}).
  */
-export function orderedSegments(layout: ChainLayout, tailId: string): string[] {
+export function orderedSegments(
+  layout: ChainLayout,
+  tailId: string,
+  refused?: RefusedLine,
+): string[] {
   const dir = tailDir(layout, tailId);
   // A folder named like a segment is no segment: nothing reads it, and it is named as a stray entry.
-  return listedWithoutLinks(layout, `tails/${tailId}`, ['tails'])
+  return listedWithoutLinks(layout, `tails/${tailId}`, ['tails'], refused)
     .filter((entry) => isSegmentFile(entry.name) && !entry.directory)
     .map((entry) => entry.name)
     .sort((a, b) => segmentNumberOf(a) - segmentNumberOf(b))
@@ -505,12 +527,14 @@ interface SegmentRead {
  * line's address and the reason, as {@link UnreadableLineError} carries them. The line is left
  * out of what the read returns and the read goes on to the next one.
  *
- * Only the verifier asks for this. Every other reader of a tail still stops at the first line it
- * cannot read, because what it returns is the tail and a tail with a hole in it is not one; the
- * verifier returns a verdict, and a verdict that stops at the first refused line hides every other
- * cause in that tail (see `verify.ts`).
+ * Two readers ask for this. The verifier does, because it returns a verdict, and a verdict that
+ * stops at the first refused line hides every other cause in that tail (see `verify.ts`). The
+ * reads that serve the record do too, through {@link refusedPartOf}: they serve what they read and
+ * name what they did not (FORMAT.md section 7.1), and the line after a refused one breaks the
+ * chain as it always did. Every other reader of a tail still stops at the first line it cannot
+ * read, because what it returns is the tail and a tail with a hole in it is not one.
  */
-export type RefusedLine = (line: UnreadableLineError) => void;
+export type RefusedLine = (line: UnreadableLineError, lineNumber?: number, start?: number) => void;
 
 /**
  * What a reading that PUTS BACK A REFORMAT is handed for a line that would not parse: the line's
@@ -550,7 +574,10 @@ export function relaying<T>(
 const REFUSED = Symbol('refused');
 
 /** One line's read: a refused line goes to `refused` when there is one, and throws when not. */
-function readOn<T>(refused: RefusedLine | undefined, read: () => T): T | typeof REFUSED {
+function readOn<T>(
+  refused: ((error: UnreadableLineError) => void) | undefined,
+  read: () => T,
+): T | typeof REFUSED {
   if (refused === undefined) return read();
   try {
     return read();
@@ -613,8 +640,9 @@ function entriesOfSegment(
     if (line.length === 0) continue;
     const couldBeTorn = isLast && !endsWithNewline && i === lines.length - 1;
     at = i + 1;
-    const entry = readOn(refused, () =>
-      parseStoredLine(line, couldBeTorn, couldBeTorn ? entryOf : relaidEntryOf, where),
+    const entry = readOn(
+      refused === undefined ? undefined : (error) => refused(error, at, start),
+      () => parseStoredLine(line, couldBeTorn, couldBeTorn ? entryOf : relaidEntryOf, where),
     );
     if (entry === REFUSED) continue;
     if (entry !== null) {
@@ -672,6 +700,64 @@ export interface RetainedEntry {
   readonly segment: string;
   /** The line's place in that file, counted from 1 (blank lines included). */
   readonly line: number;
+}
+
+/**
+ * A part of a record that a read SERVED AROUND because this mnema does not read it: a line of a
+ * segment that does not parse (damage, a merge's markers, or a line a newer mnema wrote), or a
+ * symbolic link, which the product follows nowhere (ADR-348, ADR-406). One shape for both, said by
+ * every surface in the block it says an altered entry in (`record-integrity.ts`), because to a
+ * reader they are one fact: something the record holds that the answer leaves out.
+ *
+ * It says where the part is and why, in the reader's own words, and nothing of what it holds: the
+ * bytes behind a link never travel with it, nor does a line beyond what the parser's message quotes.
+ */
+export interface RefusedPart {
+  /** A line that would not parse, or a symbolic link. */
+  readonly kind: 'line' | 'link';
+  /** The tail directory the part is in, or `''` for a link above every tail (`tails`). */
+  readonly tail: string;
+  /** The part's place in the record, `/`-separated: the segment of the line, or the link itself. */
+  readonly place: string;
+  /** For a line, its place in the segment, counted from 1 (blank lines included). */
+  readonly line?: number;
+  /** For a line, the byte it starts at in that segment: where it stands against what a reading covered. */
+  readonly start?: number;
+  /** Why the part is not read: the reader's own words. */
+  readonly reason: string;
+}
+
+/**
+ * The {@link RefusedPart} a refused read stands for. `line` is the line's number when the walk that
+ * refused it knows it better than the locus does (a backward walk names a byte offset): the
+ * second and third arguments of a {@link RefusedLine}.
+ */
+export function refusedPartOf(
+  error: UnreadableLineError,
+  line?: number,
+  start?: number,
+): RefusedPart {
+  if (error instanceof LinkedRecordError) {
+    const [top, tail] = error.path.split('/');
+    return {
+      kind: 'link',
+      tail: top === 'tails' && tail !== undefined ? tail : '',
+      place: error.path,
+      reason: error.reason,
+    };
+  }
+  const named = /[\\/]tails[\\/]([^\\/]+)[\\/]([^\\/]+) (?:line|byte offset) (\d+)$/.exec(
+    error.locus,
+  );
+  if (named === null) return { kind: 'line', tail: '', place: error.locus, reason: error.reason };
+  return {
+    kind: 'line',
+    tail: named[1] as string,
+    place: `tails/${named[1]}/${named[2]}`,
+    line: line ?? Number(named[3]),
+    ...(start !== undefined ? { start } : {}),
+    reason: error.reason,
+  };
 }
 
 /**
@@ -763,8 +849,9 @@ export function readTail(
   refused?: RefusedLine,
   relaid?: RelaidLine,
   served: Served = 'what holds',
+  linked?: RefusedLine,
 ): TailRead {
-  const segments = orderedSegments(layout, tailId);
+  const segments = orderedSegments(layout, tailId, linked);
   const every: ChainEntry[] = [];
   const held: { entry: ChainEntry; file: string; line: number }[] = [];
   let partialFinalLine = false;
@@ -904,8 +991,9 @@ export function readTailTip(
   tailId: string,
   upcasters: UpcasterRegistry,
   minSeq: number,
+  refused?: RefusedLine,
 ): ChainEntry[] {
-  const segments = orderedSegments(layout, tailId);
+  const segments = orderedSegments(layout, tailId, refused);
   const tip: ChainEntry[] = [];
   for (let s = segments.length - 1; s >= 0; s -= 1) {
     const file = segments[s] as string;
@@ -914,7 +1002,7 @@ export function readTailTip(
     // An empty segment yields nothing and moves no boundary: the last one can
     // be empty because a recovering writer truncated a torn fragment out of it,
     // and the walk simply continues into the segment before it.
-    for (const entry of parsedFromEnd(file, s === segments.length - 1, parse)) {
+    for (const entry of parsedFromEnd(file, s === segments.length - 1, parse, refused)) {
       tip.push(entry);
       if (entry.link.seq <= minSeq) {
         reachedCoverage = true;
@@ -1000,8 +1088,9 @@ export function readTailSince(
   upcasters: UpcasterRegistry,
   boundary: TailBoundary,
   lastHash: string | null,
+  refused?: RefusedLine,
 ): TailSince | undefined {
-  const segments = orderedSegments(layout, tailId);
+  const segments = orderedSegments(layout, tailId, refused);
   const at = segments.indexOf(boundary.segment);
   if (at < 0) return undefined;
   // One byte of slack for the newline a torn final line may lack: the reading that set the
@@ -1028,7 +1117,13 @@ export function readTailSince(
   for (let s = segments.length - 1; s >= at; s -= 1) {
     const file = segments[s] as string;
     const parse = (line: string): ChainEntry => parseEntry(line, upcasters);
-    for (const found of locatedFromEnd(file, s === segments.length - 1, parse)) {
+    // Said as the forward walk says it: the line's number, and not the byte it starts at.
+    const onRefused =
+      refused === undefined
+        ? undefined
+        : (error: UnreadableLineError, start: number): void =>
+            refused(error, lineAtOffset(file, start), start);
+    for (const found of locatedFromEnd(file, s === segments.length - 1, parse, onRefused)) {
       // A line STARTING before the boundary is at or below it: the walk has reached what
       // the previous reading covered, and everything pushed so far is new. Only the
       // boundary's OWN segment is walked into: every segment after it arrived whole.

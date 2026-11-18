@@ -17,9 +17,10 @@ import {
   type EventKind,
   type LinkBreak,
   LinkedRecordError,
-  listTails,
+  listTailsLeavingLinks,
   projectionCachePath,
   type RecordGroup,
+  type RefusedPart,
   type RetainedEntry,
   refuseLinks,
   tailsReadAt,
@@ -266,6 +267,7 @@ export class ProjectionCache {
   private breaks: readonly LinkBreak[] = [];
   /** What the last replay or catch-up read past: the lines of a kind this binary does not know. */
   private retainedLines: readonly RetainedEntry[] = [];
+  private refusedParts: readonly RefusedPart[] = [];
   private unreadLines: readonly UnreadLine[] = [];
   /** What the last replay or catch-up found of the records the tree holds: {@link severalRecords}. */
   private several: readonly RecordGroup[] | undefined;
@@ -304,7 +306,8 @@ export class ProjectionCache {
     const upcasters = options.upcasters ?? catalogUpcasters();
     // A tree nobody has written to has nothing to keep, and a read must not be what creates its
     // directories: persisting waits for the first tail.
-    const keeps = options.persist === true && listTails(layout).length > 0;
+    // A link among the tails is left out here and named by the replay: choosing where to keep the cache refuses nothing.
+    const keeps = options.persist === true && listTailsLeavingLinks(layout).length > 0;
     const chosenFile = options.persist === true ? readCacheFileFor(layout) : undefined;
     const path =
       options.dbPath ?? (keeps ? (chosenFile ?? projectionCachePath(layout)) : IN_MEMORY);
@@ -371,6 +374,17 @@ export class ProjectionCache {
    */
   get retained(): readonly RetainedEntry[] {
     return this.retainedLines;
+  }
+
+  /**
+   * The parts of the record the reading did not read, ALL of them in every tree the replay read: a
+   * line of a segment that does not parse and a symbolic link, left out of every projection here and
+   * said by every surface, with where each is and why, never what it holds. They ride with the replay
+   * as {@link retained} does, and are kept in the file beside the frontier; empty for every record
+   * nothing damaged. Like {@link retained}, this is no verdict: a line below the frontier is `verify`'s.
+   */
+  get refused(): readonly RefusedPart[] {
+    return this.refusedParts;
   }
 
   /**
@@ -443,9 +457,14 @@ export class ProjectionCache {
   integrityAsOfNow(): {
     readonly breaks: readonly LinkBreak[];
     readonly retained: readonly RetainedEntry[];
+    readonly refused: readonly RefusedPart[];
   } {
     this.agree();
-    const standing = { breaks: this.breaks, retained: this.retainedLines };
+    const standing = {
+      breaks: this.breaks,
+      retained: this.retainedLines,
+      refused: this.refusedParts,
+    };
     if (this.frontier === undefined) return standing;
     const arrived = chainArrivals(this.layout, this.upcasters, this.frontier);
     if (arrived.suffix) return standing;
@@ -462,9 +481,18 @@ export class ProjectionCache {
     const where = (one: RetainedEntry): string => `${one.tail}/${one.segment}:${one.line}`;
     const knownLines = new Set(this.retainedLines.map(where));
     const found = arrived.retained.filter((one) => !knownLines.has(where(one)));
+    const knownParts = this.refusedParts;
+    const newParts = arrived.refused.filter(
+      (part) =>
+        !knownParts.some(
+          (known) =>
+            known.kind === part.kind && known.place === part.place && known.line === part.line,
+        ),
+    );
     return {
       breaks: fresh.length === 0 ? this.breaks : [...this.breaks, ...fresh],
       retained: found.length === 0 ? this.retainedLines : [...this.retainedLines, ...found],
+      refused: newParts.length === 0 ? knownParts : [...knownParts, ...newParts],
     };
   }
 
@@ -490,9 +518,13 @@ export class ProjectionCache {
   rosterAsOfNow(anchor: string): Set<string> {
     const tree = this.layout.root;
     this.agree();
-    if (this.frontier === undefined) return rosterOf({ tree, upcasters: this.upcasters }, anchor);
+    if (this.frontier === undefined) {
+      return rosterOf({ tree, upcasters: this.upcasters }, anchor);
+    }
     const arrived = chainArrivals(this.layout, this.upcasters, this.frontier);
-    if (!arrived.suffix) return rosterOf({ tree, upcasters: this.upcasters }, anchor);
+    if (!arrived.suffix) {
+      return rosterOf({ tree, upcasters: this.upcasters }, anchor);
+    }
     return rosterIn([...readMembership(this.db), ...arrived.events], tree, anchor);
   }
 
@@ -530,6 +562,13 @@ export class ProjectionCache {
           this.replay();
           return;
         }
+        // A PART THIS MNEMA DOES NOT READ that lies where a catch-up reads (a link, or a line past
+        // what the frontier covers) is not one the marks below it can say was mended or taken away,
+        // so the record is replayed whole rather than believed over it.
+        if (this.refusedPartPastTheFrontier(this.frontier)) {
+          this.replay();
+          return;
+        }
         // The stamps of the segments each tail appends to, BEFORE the reading, are what the marks
         // record: see {@link activeStampsBefore}.
         const before = this.persisted ? activeStampsBefore(this.layout) : {};
@@ -558,6 +597,7 @@ export class ProjectionCache {
               arrived.frontier,
               this.breaks,
               this.retainedLines,
+              this.refusedParts,
               [...this.unreadLines, ...arrived.unread],
               expected + 1,
               before,
@@ -583,6 +623,25 @@ export class ProjectionCache {
   }
 
   /**
+   * Whether a part of the record this cache left out ({@link refused}) may lie past what its
+   * frontier covers: a link, which no mark of a segment says, or a line that starts at or after the
+   * byte a tail's reading ended on. A line below that byte is under the marks that say a segment was
+   * rewritten; one past it is read again by every catch-up, and the one that reads it fine is the
+   * one that has to drop it.
+   */
+  private refusedPartPastTheFrontier(frontier: ChainFrontier): boolean {
+    return this.refusedParts.some((part) => {
+      if (part.kind === 'link') return true;
+      const reached = frontier.tails.get(part.tail)?.boundary;
+      if (reached === undefined) return true;
+      const segment = basename(reached.segment);
+      const mine = basename(part.place);
+      if (mine !== segment) return mine > segment;
+      return part.start === undefined || part.start >= reached.bytes;
+    });
+  }
+
+  /**
    * Brings a cache kept on disk forward when ANOTHER process has written the file since this
    * one last agreed with it, and says whether it did: one query for the file's generation.
    *
@@ -601,7 +660,7 @@ export class ProjectionCache {
   /** Replays the chain whole into the tables: the one place a rebuild is written. */
   private replay(): void {
     const before = this.persisted ? activeStampsBefore(this.layout) : {};
-    const replay = chainReplay(this.layout, this.upcasters);
+    const replay = chainReplay(this.layout, this.upcasters, true);
     this.generation = inTransaction(
       this.db,
       () => {
@@ -611,6 +670,7 @@ export class ProjectionCache {
           replay.frontier,
           replay.linkBreaks,
           replay.retained,
+          replay.refused,
           replay.unread,
           generation,
           before,
@@ -623,6 +683,7 @@ export class ProjectionCache {
     this.frontier = replay.frontier;
     this.breaks = replay.linkBreaks;
     this.retainedLines = replay.retained;
+    this.refusedParts = replay.refused;
     this.unreadLines = replay.unread;
     this.several = replay.several;
   }
@@ -632,6 +693,7 @@ export class ProjectionCache {
     frontier: ChainFrontier,
     breaks: readonly LinkBreak[],
     retained: readonly RetainedEntry[],
+    refused: readonly RefusedPart[],
     unread: readonly UnreadLine[],
     generation: number,
     before: Readonly<Record<string, string>>,
@@ -642,6 +704,7 @@ export class ProjectionCache {
       frontier,
       breaks,
       retained,
+      refused,
       unread,
       sealed: this.persisted ? sealedFingerprints(frontier) : {},
       active: this.persisted ? activeMarks(frontier, before) : {},
@@ -667,6 +730,7 @@ export class ProjectionCache {
       this.frontier = undefined;
       this.breaks = [];
       this.retainedLines = [];
+      this.refusedParts = [];
       this.unreadLines = [];
       this.generation = -1;
       return;
@@ -681,12 +745,14 @@ export class ProjectionCache {
       this.frontier = undefined;
       this.breaks = [];
       this.retainedLines = [];
+      this.refusedParts = [];
       this.unreadLines = [];
       return;
     }
     this.frontier = meta.frontier;
     this.breaks = meta.breaks;
     this.retainedLines = meta.retained;
+    this.refusedParts = meta.refused;
     this.unreadLines = meta.unread;
     // A segment whose time moved over the same bytes was hashed to be believed: its new stamp is
     // kept, so the next open does not hash it again (and a read that finds nothing new, which
@@ -736,6 +802,7 @@ export class ProjectionCache {
     this.frontier = undefined;
     this.breaks = [];
     this.retainedLines = [];
+    this.refusedParts = [];
     this.unreadLines = [];
     this.generation = -1;
   }
