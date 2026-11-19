@@ -77,7 +77,7 @@ import {
   listObservationsAbout,
   memoriesSaying,
 } from './knowledge-store.js';
-import { type ChainFrontier, chainArrivals, chainReplay } from './order.js';
+import { type ChainFrontier, chainArrivals, chainReplay, type SignedFact } from './order.js';
 import { rebuild } from './rebuild.js';
 import {
   type AuthorshipFilter,
@@ -269,6 +269,8 @@ export class ProjectionCache {
   private retainedLines: readonly RetainedEntry[] = [];
   private refusedParts: readonly RefusedPart[] = [];
   private unreadLines: readonly UnreadLine[] = [];
+  /** What the tails' checkpoints proved, as of the last replay: see {@link signed}. */
+  private signedFacts: readonly SignedFact[] = [];
   /** What the last replay or catch-up found of the records the tree holds: {@link severalRecords}. */
   private several: readonly RecordGroup[] | undefined;
   /**
@@ -377,6 +379,16 @@ export class ProjectionCache {
   }
 
   /**
+   * What the tails' checkpoints proved, as of the last replay (ADR-557 to ADR-562): the runs left
+   * out of the tables because a checkpoint does not hold over them or nothing signed them past one
+   * write (Fact A), and the runs served and not signed (Fact B). Empty for every record the
+   * product wrote and nothing damaged, once its checkpoints landed.
+   */
+  get signed(): readonly SignedFact[] {
+    return this.signedFacts;
+  }
+
+  /**
    * The parts of the record the reading did not read, ALL of them in every tree the replay read: a
    * line of a segment that does not parse and a symbolic link, left out of every projection here and
    * said by every surface, with where each is and why, never what it holds. They ride with the replay
@@ -458,16 +470,26 @@ export class ProjectionCache {
     readonly breaks: readonly LinkBreak[];
     readonly retained: readonly RetainedEntry[];
     readonly refused: readonly RefusedPart[];
+    readonly signed: readonly SignedFact[];
   } {
     this.agree();
     const standing = {
       breaks: this.breaks,
       retained: this.retainedLines,
       refused: this.refusedParts,
+      signed: this.signedFacts,
     };
     if (this.frontier === undefined) return standing;
     const arrived = chainArrivals(this.layout, this.upcasters, this.frontier);
     if (arrived.suffix) return standing;
+    // What arrived is not what a checkpoint proves: the chain as it stands is read whole for what
+    // its checkpoints say, without bringing the tables forward (the next refresh replays them).
+    if (arrived.why === 'AN_ARRIVAL_IS_NOT_SIGNED') {
+      return {
+        ...standing,
+        signed: chainReplay(this.layout, this.upcasters, true).signed,
+      };
+    }
     if (arrived.why !== 'AN_ARRIVAL_DOES_NOT_CHAIN' && arrived.why !== 'AN_ARRIVAL_IS_RETAINED') {
       return standing;
     }
@@ -493,6 +515,7 @@ export class ProjectionCache {
       breaks: fresh.length === 0 ? this.breaks : [...this.breaks, ...fresh],
       retained: found.length === 0 ? this.retainedLines : [...this.retainedLines, ...found],
       refused: newParts.length === 0 ? knownParts : [...knownParts, ...newParts],
+      signed: this.signedFacts,
     };
   }
 
@@ -599,6 +622,7 @@ export class ProjectionCache {
               this.retainedLines,
               this.refusedParts,
               [...this.unreadLines, ...arrived.unread],
+              this.signedFacts,
               expected + 1,
               before,
             );
@@ -672,6 +696,7 @@ export class ProjectionCache {
           replay.retained,
           replay.refused,
           replay.unread,
+          replay.signed,
           generation,
           before,
         );
@@ -685,6 +710,7 @@ export class ProjectionCache {
     this.retainedLines = replay.retained;
     this.refusedParts = replay.refused;
     this.unreadLines = replay.unread;
+    this.signedFacts = replay.signed;
     this.several = replay.several;
   }
 
@@ -695,6 +721,7 @@ export class ProjectionCache {
     retained: readonly RetainedEntry[],
     refused: readonly RefusedPart[],
     unread: readonly UnreadLine[],
+    signed: readonly SignedFact[],
     generation: number,
     before: Readonly<Record<string, string>>,
   ): void {
@@ -706,6 +733,7 @@ export class ProjectionCache {
       retained,
       refused,
       unread,
+      signed,
       sealed: this.persisted ? sealedFingerprints(frontier) : {},
       active: this.persisted ? activeMarks(frontier, before) : {},
     };
@@ -732,6 +760,7 @@ export class ProjectionCache {
       this.retainedLines = [];
       this.refusedParts = [];
       this.unreadLines = [];
+      this.signedFacts = [];
       this.generation = -1;
       return;
     }
@@ -747,6 +776,7 @@ export class ProjectionCache {
       this.retainedLines = [];
       this.refusedParts = [];
       this.unreadLines = [];
+      this.signedFacts = [];
       return;
     }
     this.frontier = meta.frontier;
@@ -754,6 +784,7 @@ export class ProjectionCache {
     this.retainedLines = meta.retained;
     this.refusedParts = meta.refused;
     this.unreadLines = meta.unread;
+    this.signedFacts = meta.signed;
     // A segment whose time moved over the same bytes was hashed to be believed: its new stamp is
     // kept, so the next open does not hash it again (and a read that finds nothing new, which
     // never stores, would otherwise hash on every open until the next write).
@@ -804,6 +835,7 @@ export class ProjectionCache {
     this.retainedLines = [];
     this.refusedParts = [];
     this.unreadLines = [];
+    this.signedFacts = [];
     this.generation = -1;
   }
 

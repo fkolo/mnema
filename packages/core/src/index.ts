@@ -180,7 +180,13 @@ export {
   listObservationsAbout,
 } from './projections/knowledge-store.js';
 export { type Dated, NEWEST_FIRST_SQL, newestFirst } from './projections/newest-first.js';
-export { orderedEvents, orderedEventsOfRecord, type RecordOrder } from './projections/order.js';
+export {
+  orderedEvents,
+  orderedEventsOfRecord,
+  provenSubjectEvents,
+  type RecordOrder,
+  type SignedFact,
+} from './projections/order.js';
 // What each move of a record SAID, and how it is read back out of one column. One
 // shape for the three state machines that have moves, so the three folds and the
 // three reads cannot come to disagree about what a move's proof is.
@@ -316,6 +322,7 @@ export {
   type MovedTree,
   movePrivateTree,
   type NoProjectRoot,
+  notesRootOf,
   noWriterHolds,
   type Origin,
   type PassedOverTree,

@@ -35,11 +35,24 @@ export {
   type CheckpointVerdict,
   checkpointHash,
   checkpointMessage,
+  checkpointSignatureHolds,
   parseCheckpoint,
   serializeCheckpoint,
   signCheckpoint,
   verifyCheckpoint,
 } from './chain/checkpoint.js';
+export {
+  type CheckpointFault,
+  type CheckpointQuestion,
+  type CheckpointRuling,
+  checkpointBelongsToItsTail,
+  type FoldQuestion,
+  foldCheckpoints,
+  ruleOnCheckpoint,
+  type TailSigned,
+  type Withheld,
+  type WithheldRun,
+} from './chain/checkpoint-ruling.js';
 export { CodedError } from './chain/coded-error.js';
 export { decisionTexts, precedesItsText } from './chain/decision-text.js';
 export {
@@ -81,7 +94,7 @@ export {
   writtenAsBuilt,
   writtenAsStored,
 } from './chain/hash.js';
-export { IntentNotKeptError } from './chain/kept-head.js';
+export { IntentNotKeptError, readWrittenHead, type WrittenHead } from './chain/kept-head.js';
 export {
   isProtected,
   KEY_PASSPHRASE_VARIABLE,
@@ -137,6 +150,7 @@ export {
   projectionCachePath,
   publicKeyPath,
   tailDir,
+  tailFingerprint,
   tailLockPath,
   witnessDir,
   witnessSigstorePath,
@@ -176,10 +190,15 @@ export {
   tailsACutWouldUnrelink,
 } from './chain/relink-plan.js';
 export {
+  type CheckpointsMark,
+  type CommittedKeys,
+  committedKeys,
   firstLinkBreakFrom,
   holdsRecord,
+  keysTheDiskRefuses,
   type LinkBreak,
   LinkedRecordError,
+  lastTailCheckpoint,
   listAppleDoubleKeyFiles,
   listedWithoutLinks,
   listLinksInRecord,
@@ -193,6 +212,8 @@ export {
   type RetainedEntry,
   readTail,
   readTailCheckpoints,
+  readTailCheckpointsMarked,
+  readTailCheckpointsSince,
   readTailEntries,
   readTailSince,
   readTailTip,
@@ -203,7 +224,7 @@ export {
   type TailRead,
   type TailSince,
 } from './chain/store.js';
-export { subjectEvents } from './chain/subject-events.js';
+export { type ProvenOnTail, subjectEvents } from './chain/subject-events.js';
 export { type KeyATailHolds, type KeyIntroduction, keysATailHolds } from './chain/tail-keys.js';
 export { alive, DEFAULT_WAIT_MS, TailBusyError, withTailLock } from './chain/tail-lock.js';
 export {

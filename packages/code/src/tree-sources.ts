@@ -77,7 +77,10 @@ export function withCache<T>(
   upcasters: UpcasterRegistry,
   read: (cache: ProjectionCache) => T,
 ): T {
-  const cache = ProjectionCache.open(chainRoot, { upcasters, persist: true });
+  const cache = ProjectionCache.open(chainRoot, {
+    upcasters,
+    persist: true,
+  });
   try {
     cache.refresh();
     return read(cache);
@@ -210,7 +213,9 @@ export function withTreesRead<T>(
   const opened: ScopedCache[] = [];
   try {
     for (const tree of trees) {
-      const cache = ProjectionCache.open(tree.chainRoot, { upcasters });
+      const cache = ProjectionCache.open(tree.chainRoot, {
+        upcasters,
+      });
       opened.push({
         scope: tree.scope,
         chainRoot: tree.chainRoot,
@@ -319,13 +324,14 @@ export function linkBreaksOf(
   asOf: BreaksAsOf,
 ): readonly ScopedLinkBreak[] {
   return sources.flatMap((source) => {
-    const { breaks, retained, refused } =
+    const { breaks, retained, refused, signed } =
       asOf === THE_CHAIN_AS_IT_STANDS_NOW
         ? source.cache.integrityAsOfNow()
         : {
             breaks: source.cache.linkBreaks,
             retained: source.cache.retained,
             refused: source.cache.refused,
+            signed: source.cache.signed,
           };
     return [
       // The entries left out of what was served come first: they are the line that was altered.
@@ -350,12 +356,40 @@ export function linkBreaksOf(
           root: source.chainRoot,
         },
       })),
+      // The runs no signature proves (Fact A): withheld, and named with the line that failed.
+      ...signed.flatMap((fact) =>
+        fact.withheld === undefined
+          ? []
+          : [
+              {
+                scope: source.scope,
+                tail: fact.tail,
+                seq: fact.withheld.fromSeq,
+                detail: fact.withheld.detail ?? fact.withheld.why,
+                checkpoint: fact.withheld,
+              },
+            ],
+      ),
       ...breaks.map((broken) => ({
         scope: source.scope,
         tail: broken.tail,
         seq: broken.seq,
         detail: broken.detail,
       })),
+      // The runs served and not signed (Fact B) come last: they are no broken proof.
+      ...signed.flatMap((fact) =>
+        fact.unsigned === undefined
+          ? []
+          : [
+              {
+                scope: source.scope,
+                tail: fact.tail,
+                seq: fact.unsigned.fromSeq,
+                detail: 'not yet signed',
+                unsigned: fact.unsigned,
+              },
+            ],
+      ),
     ];
   });
 }
