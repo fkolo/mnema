@@ -247,10 +247,21 @@ claim about the agent hosts is held, and which are not held yet, is in [`docs/ev
 
 ## Contributors
 
-Thanks to everyone whose pull request has been merged: [@bfs2021](https://github.com/bfs2021),
-[@jay23606](https://github.com/jay23606), [@mentallyunstable-lab](https://github.com/mentallyunstable-lab),
-[@prascli](https://github.com/prascli) and [@tylrcc](https://github.com/tylrcc). To add your name,
-start from [`CONTRIBUTING.md`](CONTRIBUTING.md).
+<p align="center">Thank you to everyone whose pull request made mnema better.</p>
+
+<!-- contributors:start -->
+<table align="center">
+<tr>
+<td align="center"><a href="https://github.com/mentallyunstable-lab"><img src="docs/assets/contributor-mentallyunstable-lab.svg" width="72" height="72" alt="@mentallyunstable-lab"><br><sub>mentallyunstable-lab</sub></a></td>
+<td align="center"><a href="https://github.com/tylrcc"><img src="docs/assets/contributor-tylrcc.svg" width="72" height="72" alt="@tylrcc"><br><sub>tylrcc</sub></a></td>
+<td align="center"><a href="https://github.com/bfs2021"><img src="docs/assets/contributor-bfs2021.svg" width="72" height="72" alt="@bfs2021"><br><sub>bfs2021</sub></a></td>
+<td align="center"><a href="https://github.com/jay23606"><img src="docs/assets/contributor-jay23606.svg" width="72" height="72" alt="@jay23606"><br><sub>jay23606</sub></a></td>
+<td align="center"><a href="https://github.com/prascli"><img src="docs/assets/contributor-prascli.svg" width="72" height="72" alt="@prascli"><br><sub>prascli</sub></a></td>
+</tr>
+</table>
+<!-- contributors:end -->
+
+<p align="center">To join them, start from <a href="CONTRIBUTING.md"><code>CONTRIBUTING.md</code></a>, the pinned <a href="https://github.com/mnema-work/mnema/issues/1345">Start here</a> issue, or an issue labelled <code>ready for an agent</code>.</p>
 
 ## License
 
